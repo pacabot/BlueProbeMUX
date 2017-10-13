@@ -18,7 +18,8 @@ int main(int argc, char const *argv[])
   char name[256];
 
   int e = openpty(&master, &slave, &name[0], NULL, NULL);
-  if(0 > e) {
+  if(0 > e)
+  {
     printf("Error: %s\n", strerror(errno));
     return -1;
   }
@@ -27,7 +28,8 @@ int main(int argc, char const *argv[])
 
   int r;
 
-  while((r = read(master, &name[0], sizeof(name)-1)) > 0) {
+  while((r = read(master, &name[0], sizeof(name)-1)) > 0)
+  {
     name[r] = '\0';
     printf("%s", &name[0]);
   }
