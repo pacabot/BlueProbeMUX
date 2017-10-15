@@ -11,190 +11,137 @@
 #include <pty.h>
 #include <string.h>
 #include <unistd.h>
+#include <termios.h>
+#include <unistd.h>
 
-#include <stdlib.h>
-#include <stdarg.h>
-#include <sys/stat.h>
-#include <err.h>
+int set_interface_attribs (int fd, int speed, int parity)
+{
+	struct termios tty;
+	memset (&tty, 0, sizeof tty);
+	if (tcgetattr (fd, &tty) != 0)
+	{
+		fprintf (stderr, "error %d from tcgetattr", errno);
+		return -1;
+	}
 
-/**
- * whether or not to print debug messages to stderr
- *   0 : debug off
- *   1 : debug on
- */
-#define DEBUG   1
+	cfsetospeed (&tty, speed);
+	cfsetispeed (&tty, speed);
 
-/**
- * whether or not to create virtual TTYs for the multiplex
- *   0 : do not create
- *   1 : create
- */
-#define CREATE_NODES    1
+	tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;     // 8-bit chars
+	// disable IGNBRK for mismatched speed tests; otherwise receive break
+	// as \000 chars
+	tty.c_iflag &= ~IGNBRK;         // disable break processing
+	tty.c_lflag = 0;                // no signaling chars, no echo,
+									// no canonical processing
+	tty.c_oflag = 0;                // no remapping, no delays
+	tty.c_cc[VMIN]  = 0;            // read doesn't block
+	tty.c_cc[VTIME] = 5;            // 0.5 seconds read timeout
 
-/* number of virtual TTYs to create (most modems can handle up to 4) */
-#define NUM_NODES   2
+	tty.c_iflag &= ~(IXON | IXOFF | IXANY); // shut off xon/xoff ctrl
 
-/* name of the virtual TTYs to create */
-#define BASENAME_NODES  "/dev/ttyGSM"
+	tty.c_cflag |= (CLOCAL | CREAD);// ignore modem controls,
+									// enable reading
+	tty.c_cflag &= ~(PARENB | PARODD);      // shut off parity
+	tty.c_cflag |= parity;
+	tty.c_cflag &= ~CSTOPB;
+	tty.c_cflag &= ~CRTSCTS;
 
-/* name of the driver, used to get the major number */
-#define DRIVER_NAME "gsmtty"
-
-/**
- *   Prints debug messages to stderr if debug is wanted
- */
-static void dbg(char *fmt, ...) {
-
-    va_list args;
-
-    if (DEBUG) {
-        fflush(NULL);
-        va_start(args, fmt);
-        vfprintf(stderr, fmt, args);
-        va_end(args);
-        fprintf(stderr, "\n");
-        fflush(NULL);
-    }
-    return;
+	if (tcsetattr (fd, TCSANOW, &tty) != 0)
+	{
+		fprintf (stderr, "error %d from tcsetattr", errno);
+		return -1;
+	}
+	return 0;
 }
 
-/**
- *   Creates nodes for the virtual TTYs
- *   Returns the number of nodes created
- */
-int make_nodes(int major, char *basename, int number_nodes) {
+void set_blocking (int fd, int should_block)
+{
+	struct termios tty;
+	memset (&tty, 0, sizeof tty);
+	if (tcgetattr (fd, &tty) != 0)
+	{
+		fprintf (stderr, "error %d from tggetattr", errno);
+		return;
+	}
 
-    int minor, created = 0;
-    dev_t device;
-    char node_name[15];
-    mode_t oldmask;
+	tty.c_cc[VMIN]  = should_block ? 1 : 0;
+	tty.c_cc[VTIME] = 5;            // 0.5 seconds read timeout
 
-    /* set a new mask to get 666 mode and stores the old one */
-    oldmask = umask(0);
-
-    for (minor=1; minor<number_nodes+1; minor++) {
-
-        /* append the minor number to the base name */
-        sprintf(node_name, "%s%d", basename, minor);
-
-        /* store a device info with major and minor */
-        device = makedev(major, minor);
-
-        /* create the actual character node */
-        if (mknod(node_name, S_IFCHR | 0666, device) != 0) {
-            warn("Cannot create %s", node_name);
-        } else {
-            created++;
-            dbg("Created %s", node_name);
-        }
-
-    }
-
-    /* revert the mask to the old one */
-    umask(oldmask);
-
-    return created;
-}
-
-/**
- *   Removes previously created TTY nodes
- *   Returns nothing, it doesn't really matter if it fails
- */
-void remove_nodes(char *basename, int number_nodes) {
-
-    int node;
-    char node_name[15];
-
-    for (node=1; node<number_nodes+1; node++) {
-
-        /* append the minor number to the base name */
-        sprintf(node_name, "%s%d", basename, node);
-
-        /* unlink the actual character node */
-        dbg("Removing %s", node_name);
-        if (unlink(node_name) == -1)
-            warn("Cannot remove %s", node_name);
-
-    }
-
-    return;
-}
-
-/**
-*   Gets the major number of the driver device
-*   Returns  the major number on success
-*           -1 on failure
-*/
-int get_major(char *driver) {
-
-    FILE *fp;
-    char *line = NULL;
-    size_t len = 0;
-    ssize_t read;
-    char device[20];
-    int major = -1;
-
-    /* open /proc/devices file */
-    if ((fp = fopen("/proc/devices", "r")) == NULL)
-        err(EXIT_FAILURE, "Cannot open /proc/devices");
-
-    /* read the file line by line */
-    while ((major == -1) && (read = getline(&line, &len, fp)) != -1) {
-
-        /* if the driver name string is found in the line, try to get the major */
-        if (strstr(line, driver) != NULL) {
-            if (sscanf(line,"%d %s\n", &major, device) != 2)
-                major = -1;
-        }
-
-        /* free the line before getting a new one */
-        if (line) {
-            free(line);
-            line = NULL;
-        }
-
-    }
-
-    /* close /proc/devices file */
-    fclose(fp);
-
-    return major;
+	if (tcsetattr (fd, TCSANOW, &tty) != 0)
+		fprintf (stderr, "error %d setting term attributes", errno);
 }
 
 int main(int argc, char const *argv[])
 {
-    int master, slave;
-    char name[256];
-    int major;
+	/* PTY init*/
+	int master1, slave1;
+	int master2, slave2;
+	char name1[256];
+	char name2[256];
 
-    /* create the virtual TTYs */
-    if (CREATE_NODES) {
-        int created;
-        if ((major = get_major(DRIVER_NAME)) < 0)
-            errx(EXIT_FAILURE, "Cannot get major number");
-        if ((created = make_nodes(major, BASENAME_NODES, NUM_NODES)) < NUM_NODES)
-            warnx("Cannot create all nodes, only %d/%d have been created.", created, NUM_NODES);
-    }
+	int e1 = openpty(&master1, &slave1, &name1[0], NULL, NULL);
+	if(0 > e1)
+	{
+		printf("Error: %s\n", strerror(errno));
+		return -1;
+	}
 
-    int e = openpty(&master, &slave, &name[0], NULL, NULL);
-    if(0 > e)
-    {
-        printf("Error: %s\n", strerror(errno));
-        return -1;
-    }
+	int e2 = openpty(&master2, &slave2, &name2[0], NULL, NULL);
+	if(0 > e2)
+	{
+		printf("Error: %s\n", strerror(errno));
+		return -1;
+	}
 
-    printf("Slave PTY: %s\n", name);
+	printf("Slave PTY1: %s\n", name1);
+	printf("Slave PTY2: %s\n", name2);
 
-    int r;
+	/*TTY*/
+	int n;
+	char *portname = "/dev/ttyUSB0";
+	int fd = open (portname, O_RDWR | O_NOCTTY | O_SYNC);
+	if (fd < 0)
+	{
+		fprintf (stderr, "error %d opening %s: %s", errno, portname, strerror (errno));
+		return -1;
+	}
 
-    while((r = read(master, &name[0], sizeof(name)-1)) > 0)
-    {
-        name[r] = '\0';
-        printf("%s", &name[0]);
-    }
+	set_interface_attribs (fd, B115200, 0);  // set speed to 115,200 bps, 8n1 (no parity)
+	set_blocking (fd, 0);                // set no blocking
+	sleep (3);
+	write (fd, "hello!\n", 7);           // send 7 character greeting
 
-    close(slave);
-    close(master);
+	usleep ((7 + 25) * 100);             // sleep enough to transmit the 7 plus
+	                                     // receive 25:  approx 100 uS per char transmit
+	char buf [100];
+	while(1)
+	{
+		while ((n = read (fd, buf, (sizeof(buf) - 1)))<=0) // read up to 100 characters if ready to read
+		{
+			usleep(1000);
+		}
+		buf[n] = '\0';
+		write(master1, buf, strlen(buf));
+		write(master2, buf, strlen(buf));
+		printf("recived : %s", buf);
+	}
+	close(slave1);
+	close(master1);
+	close(slave2);
+	close(master2);
 
-    return 0;
+	return 0;
+
+	/* read a PTY*/
+
+//	strcpy(name,"coucou tout le monde\n");
+//	while(1)
+//	{
+//		write(master, name, strlen(name));
+//		printf("%s", &name[0]);
+//		sleep(1);
+//	}
+
+
+//  return 0;
 }
