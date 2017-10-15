@@ -17,6 +17,9 @@
 #include <sys/stat.h>
 #include <err.h>
 
+/* serial port of blueProbe */
+#define SERIAL_PORT "/dev/ttyACM0"
+
 /**
  * whether or not to print debug messages to stderr
  *   0 : debug off
@@ -35,7 +38,7 @@
 #define NUM_NODES   2
 
 /* name of the virtual TTYs to create */
-#define BASENAME_NODES  "/dev/ttyGSM"
+#define BASENAME_NODES  "/dev/ttyGDB"
 
 /* name of the driver, used to get the major number */
 #define DRIVER_NAME "gsmtty"
@@ -163,38 +166,28 @@ int get_major(char *driver) {
 
 int main(int argc, char const *argv[])
 {
-    int master, slave;
-    char name[256];
-    int major;
+    int serial_fd, major;
+    struct termios tio;
+
+    /* print global parameters */
+    dbg("SERIAL_PORT = %s", SERIAL_PORT);
+
+    /* open the serial port */
+    serial_fd = open(SERIAL_PORT, O_RDWR | O_NOCTTY | O_NDELAY);
+    if (serial_fd == -1)
+        err(EXIT_FAILURE, "Cannot open %s", SERIAL_PORT);
+
+    /* get the current attributes of the serial port */
+    if (tcgetattr(serial_fd, &tio) == -1)
+        err(EXIT_FAILURE, "Cannot get line attributes");
 
     /* create the virtual TTYs */
-    if (CREATE_NODES) {
+    if (CREATE_NODES)
+    {
         int created;
         if ((major = get_major(DRIVER_NAME)) < 0)
             errx(EXIT_FAILURE, "Cannot get major number");
         if ((created = make_nodes(major, BASENAME_NODES, NUM_NODES)) < NUM_NODES)
             warnx("Cannot create all nodes, only %d/%d have been created.", created, NUM_NODES);
     }
-
-    int e = openpty(&master, &slave, &name[0], NULL, NULL);
-    if(0 > e)
-    {
-        printf("Error: %s\n", strerror(errno));
-        return -1;
-    }
-
-    printf("Slave PTY: %s\n", name);
-
-    int r;
-
-    while((r = read(master, &name[0], sizeof(name)-1)) > 0)
-    {
-        name[r] = '\0';
-        printf("%s", &name[0]);
-    }
-
-    close(slave);
-    close(master);
-
-    return 0;
 }
